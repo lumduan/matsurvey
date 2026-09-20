@@ -1,0 +1,67 @@
+name: guard
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+
+      # A pull request must not be judged by a guard it is allowed to edit, so
+      # the guard and its lists are taken from the base branch instead.
+      - name: Take the guard from the base branch
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+          mkdir -p "${RUNNER_TEMP}/guard-base"
+          git archive "origin/${BASE_REF}" scripts/content_guard.py guard \
+            | tar -x -C "${RUNNER_TEMP}/guard-base"
+          echo "GUARD=${RUNNER_TEMP}/guard-base/scripts/content_guard.py" >> "$GITHUB_ENV"
+          echo "LISTS=${RUNNER_TEMP}/guard-base/guard" >> "$GITHUB_ENV"
+
+      - name: Take the guard from this branch
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          echo "GUARD=scripts/content_guard.py" >> "$GITHUB_ENV"
+          echo "LISTS=guard" >> "$GITHUB_ENV"
+
+      - name: Scan the tracked tree and the whole history
+        run: python "$GUARD" --lists "$LISTS" --tree --history --ci
+
+      - name: Scan the pull request range
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python "$GUARD" --lists "$LISTS" --range "${BASE_SHA}..${HEAD_SHA}" --ci
+
+      # Title, body and branch name arrive as environment variables. They are
+      # attacker-controlled text and must never be interpolated into a script.
+      - name: Scan the pull request title, body and branch name
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          printf '%s\n%s\n%s\n' "$PR_TITLE" "$PR_BODY" "$HEAD_REF" \
+            | python "$GUARD" --lists "$LISTS" --text - --ci
