@@ -92,6 +92,10 @@ jobs:
             .github/workflows/ .githooks/ scripts/content_guard.py \
             scripts/build_denylist.py guard/ || true)
           if [ -n "$changed" ]; then
+            # Also to the log: a job summary is only readable in the web UI, so
+            # a notice that exists nowhere else cannot be checked by a reviewer
+            # working from the command line, or quoted as evidence.
+            printf 'guard-critical paths changed in this pull request:\n%s\n' "$changed"
             {
               echo "## Guard-critical paths changed"
               echo
@@ -104,4 +108,5 @@ jobs:
               echo "$changed"
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
+            echo "step summary: $(wc -c < "$GITHUB_STEP_SUMMARY") bytes"
           fi
