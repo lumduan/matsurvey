@@ -7,7 +7,8 @@ Thank you for helping. One rule matters more than the rest, so it comes first.
 matsurvey is neutral tooling. It processes a document you already have; it never carries
 one. Nothing in the list below may appear anywhere public — not in file contents, not in
 file or directory names, not in commit messages, branch names, pull request titles or
-bodies, issue text, or CI logs.
+bodies, issue text, or CI logs. This policy is ADR-001; the decision records live in
+[docs/adr/README.md](docs/adr/README.md).
 
 | Do not add | Examples |
 |---|---|
@@ -16,9 +17,10 @@ bodies, issue text, or CI logs.
 | Anything derived from them | renders, tiles, crops, screenshots; extracted geometry, coordinates, colours, palettes, sensor models; measured sizes, counts or hashes; extracted text; area or object names taken from rules |
 | Other third-party assets | images, icons, fonts, colour profiles, audio, video, documentation text, or code copied from anywhere else |
 
-Naming a software dependency is fine where it is technically or legally required:
-`pyproject.toml`, `uv.lock`, import statements, `NOTICE`, and the license sentence in the
-README. Nowhere else.
+Names of open-source software this project uses or evaluates — libraries, frameworks,
+tools — are allowed in code, dependency files, `NOTICE` and technical documents. Everything
+else about third parties is not: no competition, organiser, programme, theme or sponsor
+names, and no toy or hardware brands, anywhere in the repository.
 
 Write the code yourself. Do not paste code in from web pages, question-and-answer sites,
 other repositories or documentation examples.
@@ -86,6 +88,13 @@ uv run pytest -m "not local and not golden" -q
 Two markers select tests that need things this repository does not ship: `local` needs the
 maintainer's own plaintext lists, and `golden` needs source documents you supply yourself.
 CI runs neither.
+
+## Developer Certificate of Origin
+
+Every commit in a pull request must carry a `Signed-off-by:` line matching the commit
+author (`git commit -s`), certifying the [Developer Certificate of Origin 1.1](https://developercertificate.org/).
+Pull requests are squash-merged with the PR title only, so the sign-off record lives in
+the pull request's commits.
 
 ## Pull requests
 
