@@ -1,0 +1,14 @@
+matsurvey
+Copyright 2026 lumduan and matsurvey contributors
+
+Licensed under AGPL-3.0-or-later. See LICENSE for the full text.
+
+matsurvey depends on the third-party components listed below. They are not
+distributed with this repository; the versions shown are the ones resolved in
+uv.lock. Each remains under its own license, held by its own authors.
+
+  Pygments   2.21.0      BSD-2-Clause
+  iniconfig  2.3.0       MIT
+  packaging  26.3        Apache-2.0 OR BSD-2-Clause
+  pluggy     1.6.0       MIT
+  pytest     9.1.1       MIT
