@@ -3,9 +3,20 @@ name: guard
 on:
   push:
   pull_request:
+    # A title or body edited after the checks went green is otherwise never
+    # re-scanned, and the pull request title becomes the commit message on the
+    # default branch.
+    types: [opened, synchronize, reopened, edited]
 
 permissions:
   contents: read
+
+# Editing a pull request can queue several runs in a row and only the newest
+# matters. Runs on a branch are never cancelled: they are the record for a
+# commit that already exists.
+concurrency:
+  group: guard-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   guard:
@@ -65,3 +76,32 @@ jobs:
           set -euo pipefail
           printf '%s\n%s\n%s\n' "$PR_TITLE" "$PR_BODY" "$HEAD_REF" \
             | python "$GUARD" --lists "$LISTS" --text - --ci
+
+      # Last on purpose. This step prints file paths, and a path is public
+      # content like any other: it runs only once the scans above have already
+      # cleared every path in the range. It needs no guard of its own, so it
+      # still reports when the pull request is the thing changing the guard.
+      - name: Note changes to guard-critical paths
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+          changed=$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}" -- \
+            .github/workflows/ .githooks/ scripts/content_guard.py \
+            scripts/build_denylist.py guard/ || true)
+          if [ -n "$changed" ]; then
+            {
+              echo "## Guard-critical paths changed"
+              echo
+              echo "A green guard check is not evidence for this pull request:"
+              echo "on a pull request the job runs the workflow file from the"
+              echo "pull request itself. Run the guard from the default branch"
+              echo "against this head before merging - see CONTRIBUTING.md."
+              echo
+              echo '```'
+              echo "$changed"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
