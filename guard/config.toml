@@ -18,4 +18,4 @@ data_uri_base64_min = 256
 # this repository contains no binary files.
 binary = []
 # Paths permitted to exceed max_file_bytes, up to hard_max_file_bytes.
-size = ["uv.lock", "guard/shingles.v1.txt"]
+size = ["uv.lock", "guard/shingles.v2.txt"]

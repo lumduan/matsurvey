@@ -15,7 +15,8 @@ from pathlib import Path
 import pytest
 
 import content_guard as cg
-from conftest import TEST_SALT, git, make_context, write_lists
+import build_denylist as bd
+from conftest import TEST_SALT, git, make_context, write_lists, write_raw
 
 SHINGLE = "alpha bravo charlie delta echo foxtrot golf hotel india juliet"
 
@@ -158,68 +159,140 @@ def test_r6_data_uri(ctx):
 
 
 # --------------------------------------------------------------------------
-# R7  terms
+# R7  phrase -- the alpha sequence, where digits are invisible
 # --------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
     ("label", "text"),
     [
-        ("unigram", "the zorblax sits here"),
-        ("case variant", "THE ZORBLAX SITS HERE"),
-        ("mixed case", "The Zorblax sits"),
-        ("internal capital", "The ZorBlax sits"),
+        ("as written", "the zorblax sits here"),
+        ("uppercase", "THE ZORBLAX SITS HERE"),
+        ("title case", "The Zorblax sits"),
         ("punctuation", "a (zorblax) here"),
-        ("bigram across punctuation", "the quux-frobnitz unit"),
-        ("bigram across dots", "quux.frobnitz."),
-        ("camelCase", "QuuxFrobnitz"),
-        ("snake_case", "quux_frobnitz"),
-        ("phrase across a newline", "quux\nfrobnitz"),
-        ("spaced single letters", "marked q r s on the plate"),
-        ("full-width letters", "ｚｏｒｂｌａｘ"),
+        ("full-width", "\uff5a\uff4f\uff52\uff42\uff4c\uff41\uff58"),
     ],
 )
-def test_r7_variants_are_matched(ctx, label, text):
-    findings = cg.scan_text("sample.txt", text, ctx)
-    assert fired(findings, "R7"), f"{label} was not matched"
+def test_phrase_unigram_variants(ctx, label, text):
+    assert fired(cg.scan_text("s.txt", text, ctx), "R7"), f"{label} was not matched"
+
+
+@pytest.mark.parametrize(
+    ("label", "text"),
+    [
+        ("as written", "the quux frobnitz unit"),
+        ("uppercase", "THE QUUX FROBNITZ UNIT"),
+        ("camelCase", "QuuxFrobnitz"),
+        ("hyphenated", "the quux-frobnitz unit"),
+        ("dotted", "quux.frobnitz."),
+        ("snake_case", "quux_frobnitz"),
+        ("across a newline", "quux\nfrobnitz"),
+        ("a year between the words", "quux 2026 frobnitz"),
+    ],
+)
+def test_phrase_variants_are_matched(ctx, label, text):
+    assert fired(cg.scan_text("s.txt", text, ctx), "R7"), f"{label} was not matched"
 
 
 @pytest.mark.parametrize(
     "text",
-    [
-        "zorblaxian creatures",
-        "prezorblax",
-        "zorbla",
-        "quux frobnitzes",
-    ],
+    ["quux big frobnitz", "quuxy frobnitz", "quux frobnitzes", "zorblaxian", "prezorblax", "zorbla"],
 )
-def test_r7_longer_words_are_not_matched(ctx, text):
+def test_phrase_near_misses_are_not_matched(ctx, text):
     """Matching is token equality, never substring."""
-    assert not fired(cg.scan_text("sample.txt", text, ctx), "R7")
+    assert not fired(cg.scan_text("s.txt", text, ctx), "R7")
 
 
-def test_r7_internal_capital_is_rejoined(ctx):
-    """A camelCase spelling of a single-word term is matched in its joined form."""
-    assert fired(cg.scan_text("s.txt", "the ZorBlax plate", ctx), "R7")
-    assert cg.word_sequence("ZorBlax") == ["zor", "blax"], "the word split is unchanged"
+def test_a_digit_is_invisible_to_a_phrase(ctx):
+    """The alpha sequence skips digits, so a year between the words is ignored."""
+    tokens = cg.tokenize_text("quux 2026 frobnitz")
+    assert [token.value for token in cg.alpha_tokens(tokens)] == ["quux", "frobnitz"]
 
 
-def test_r7_concatenated_form_matches_when_listed(ctx):
-    assert fired(cg.scan_text("s.txt", "quuxfrobnitz", ctx), "R7")
+# --------------------------------------------------------------------------
+# R7  mixed -- a term carrying a digit matches only where the digit is
+# --------------------------------------------------------------------------
 
 
-def test_r7_concatenated_form_does_not_match_the_spaced_entry(tmp_path):
-    """Why a concatenated spelling needs its own list entry.
+@pytest.mark.parametrize("text", ["qx7", "QX7", "qx-7", "qx 7", "QX7Mod", "the qx7 plate"])
+def test_mixed_variants_are_matched(ctx, text):
+    assert fired(cg.scan_text("s.txt", text, ctx), "R7")
 
-    Joining the words produces one token, which is not the two-word window the
-    spaced entry hashes.  The term list therefore carries both spellings.
+
+@pytest.mark.parametrize("text", ["for qx in items", "qx8", "aqx7", "prqx 7", "qx"])
+def test_mixed_does_not_degrade_to_its_letters(ctx, text):
+    """The regression this format exists to prevent.
+
+    Dropping the digit would leave a bare two-letter entry, and every ordinary
+    use of that name as an identifier would be refused.
     """
-    ctx = make_context(tmp_path / "lists", terms=("quux frobnitz",))
-    assert not fired(cg.scan_text("s.txt", "quuxfrobnitz", ctx), "R7")
+    assert not fired(cg.scan_text("s.txt", text, ctx), "R7")
+
+
+def test_a_digit_term_never_reports_a_phrase_kind(ctx):
+    findings = [f for f in cg.scan_text("s.txt", "qx7", ctx) if f.rule == "R7"]
+    assert findings
+    assert all("phrase" not in finding.kinds for finding in findings)
+
+
+# --------------------------------------------------------------------------
+# R7  compact -- inside one chunk, and never across whitespace
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["GloopWorks", "gloop-works", "gloop_works", "gloop.works", "gloopworks", "x_gloopworks_y"],
+)
+def test_compact_variants_are_matched(ctx, text):
+    assert fired(cg.scan_text("s.txt", text, ctx), "R7")
+
+
+@pytest.mark.parametrize("text", ["the gloop works well", "gloop, works", "gloop\nworks"])
+def test_compact_never_crosses_whitespace(ctx, text):
+    """A compound of common words must not fire on prose that merely contains them."""
+    assert not fired(cg.scan_text("s.txt", text, ctx), "R7")
+
+
+def test_compact_supersedes_the_v1_joined_run_check(ctx):
+    """An internal capital needed a dedicated re-joining pass before; compact covers it."""
+    assert fired(cg.scan_text("s.txt", "the ZorBlax plate", ctx), "R7")
+    assert [token.value for token in cg.tokenize_text("ZorBlax")] == ["zor", "blax"]
+
+
+def test_compact_matches_the_concatenated_spelling_of_a_spaced_term(ctx):
+    """Deliberately not matched before this format; compact matches it now."""
+    findings = [f for f in cg.scan_text("s.txt", "quuxfrobnitz", ctx) if f.rule == "R7"]
+    assert findings
+    assert findings[0].kinds == ("compact",)
+
+
+# --------------------------------------------------------------------------
+# R7  spaced single letters, reported position, and the kinds themselves
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("text", ["z q v", "z. q. v.", "Z.Q.V.", "zqv", "marked z q v here"])
+def test_spaced_letter_term_variants(ctx, text):
+    assert fired(cg.scan_text("s.txt", text, ctx), "R7")
+
+
+@pytest.mark.parametrize("text", ["z q x v", "z v q"])
+def test_spaced_letter_near_misses(ctx, text):
+    assert not fired(cg.scan_text("s.txt", text, ctx), "R7")
+
+
+def test_finding_names_every_kind_that_fired(ctx):
+    """One span, one finding, naming each kind -- not one finding per kind."""
+    findings = [f for f in cg.scan_text("s.txt", "QuuxFrobnitz", ctx) if f.rule == "R7"]
+    assert len(findings) == 1
+    assert findings[0].kinds == ("phrase", "compact")
 
 
 def test_r7_reports_position_of_the_first_token(ctx):
-    findings = [f for f in cg.scan_text("s.txt", "one\ntwo quux frobnitz\n", ctx) if f.rule == "R7"]
+    findings = [
+        f for f in cg.scan_text("s.txt", "one\ntwo quux frobnitz\n", ctx) if f.rule == "R7"
+    ]
     assert findings
     assert (findings[0].line, findings[0].col) == (2, 5)
 
@@ -301,6 +374,14 @@ def test_r10_copy_spanning_two_lines_detected(shingle_ctx):
     words = SHINGLE.split()
     broken = " ".join(words[:5]) + "\n" + " ".join(words[5:])
     assert fired(cg.scan_text("s.txt", broken, shingle_ctx), "R10")
+
+
+def test_r10_digits_between_words_do_not_break_a_shingle(shingle_ctx):
+    """Shingles run over the alpha sequence, so interleaved numbers are ignored."""
+    numbered = " ".join(
+        f"{word} {index}" for index, word in enumerate(SHINGLE.split())
+    )
+    assert fired(cg.scan_text("s.txt", numbered, shingle_ctx), "R10")
 
 
 @pytest.mark.parametrize(
@@ -468,13 +549,13 @@ def test_ci_redacts_a_denylisted_path(capsys, git_repo, cli_lists):
 # --------------------------------------------------------------------------
 
 
-def test_corrupt_denylist_exits_two(tmp_path, cli_lists):
-    (cli_lists / "denylist.v1.txt").write_text("term:not-a-hash\n", encoding="utf-8")
+def test_corrupt_denylist_exits_two(cli_lists):
+    write_raw(cli_lists / cg.DENYLIST_NAME, ["phrase:not-a-hash"], cg.SALT)
     assert cg.main(["--text", "hello", "--lists", str(cli_lists)]) == 2
 
 
 def test_corrupt_shingle_list_exits_two(cli_lists):
-    (cli_lists / "shingles.v1.txt").write_text("zzzz\n", encoding="utf-8")
+    write_raw(cli_lists / cg.SHINGLES_NAME, ["zzzz"], cg.SALT)
     assert cg.main(["--text", "hello", "--lists", str(cli_lists)]) == 2
 
 
@@ -497,8 +578,75 @@ def test_no_mode_selected_exits_two(cli_lists):
 
 
 def test_unreadable_denylist_exits_two(cli_lists):
-    (cli_lists / "denylist.v1.txt").unlink()
+    (cli_lists / cg.DENYLIST_NAME).unlink()
     assert cg.main(["--text", "hello", "--lists", str(cli_lists)]) == 2
+
+
+# --------------------------------------------------------------------------
+# list format -- a list the guard cannot vouch for must never read as clean
+# --------------------------------------------------------------------------
+
+
+def test_missing_header_exits_two(cli_lists):
+    write_raw(cli_lists / cg.DENYLIST_NAME, ["phrase:" + "0" * 64], cg.SALT, header=[])
+    assert cg.main(["--text", "hello", "--lists", str(cli_lists)]) == 2
+
+
+def test_wrong_tokenizer_version_exits_two(cli_lists):
+    header = list(cg.list_header(cg.SALT))
+    header[2] = "# tokenizer: 1"
+    write_raw(cli_lists / cg.DENYLIST_NAME, [], cg.SALT, header=header)
+    assert cg.main(["--text", "hello", "--lists", str(cli_lists)]) == 2
+
+
+def test_wrong_format_version_exits_two(cli_lists):
+    header = list(cg.list_header(cg.SALT))
+    header[1] = "# format: 1"
+    write_raw(cli_lists / cg.DENYLIST_NAME, [], cg.SALT, header=header)
+    assert cg.main(["--text", "hello", "--lists", str(cli_lists)]) == 2
+
+
+def test_wrong_salt_exits_two(cli_lists):
+    write_raw(cli_lists / cg.DENYLIST_NAME, [], "some-other-salt")
+    assert cg.main(["--text", "hello", "--lists", str(cli_lists)]) == 2
+
+
+def test_unknown_kind_exits_two(cli_lists):
+    write_raw(cli_lists / cg.DENYLIST_NAME, ["sideways:" + "0" * 64], cg.SALT)
+    assert cg.main(["--text", "hello", "--lists", str(cli_lists)]) == 2
+
+
+def test_unsorted_entries_exit_two(cli_lists):
+    write_raw(
+        cli_lists / cg.DENYLIST_NAME,
+        ["phrase:" + "b" * 64, "phrase:" + "a" * 64],
+        cg.SALT,
+    )
+    assert cg.main(["--text", "hello", "--lists", str(cli_lists)]) == 2
+
+
+def test_duplicate_entry_exits_two(cli_lists):
+    entry = "phrase:" + "a" * 64
+    write_raw(cli_lists / cg.DENYLIST_NAME, [entry, entry], cg.SALT)
+    assert cg.main(["--text", "hello", "--lists", str(cli_lists)]) == 2
+
+
+def test_comment_after_the_header_exits_two(cli_lists):
+    write_raw(cli_lists / cg.DENYLIST_NAME, ["# a note", "phrase:" + "a" * 64], cg.SALT)
+    assert cg.main(["--text", "hello", "--lists", str(cli_lists)]) == 2
+
+
+@pytest.mark.parametrize("stale", ["denylist.v1.txt", "shingles.v1.txt", "denylist.v9.txt"])
+def test_a_list_from_another_format_exits_two(cli_lists, stale):
+    """A leftover list is refused rather than quietly ignored."""
+    (cli_lists / stale).write_text("# leftover\n", encoding="utf-8")
+    assert cg.main(["--text", "hello", "--lists", str(cli_lists)]) == 2
+
+
+def test_a_list_built_under_a_different_salt_matches_nothing_and_is_refused(tmp_path):
+    """The failure this format exists to prevent: skew that reads as clean."""
+    lists = write_lists(tmp_path / "skewed", salt="another-salt", terms=("zorblax",))
+    assert cg.main(["--text", "zorblax", "--lists", str(lists)]) == 2
 
 
 # --------------------------------------------------------------------------
@@ -509,18 +657,41 @@ def test_unreadable_denylist_exits_two(cli_lists):
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        ("A-B-C", ["a", "b", "c"]),
-        ("A.B.C.", ["a", "b", "c"]),
-        ("AbcDef", ["abc", "def"]),
-        ("abc_def", ["abc", "def"]),
+        ("RoboBot", ["robo", "bot"]),
+        ("ABCDef", ["abc", "def"]),
+        ("HTTPServer", ["http", "server"]),
+        ("qx7", ["qx", "7"]),
+        ("QX7Mod", ["qx", "7", "mod"]),
+        ("v2Parser", ["v", "2", "parser"]),
+        ("zor_blax-9.q", ["zor", "blax", "9", "q"]),
         ("ABC", ["abc"]),
-        ("zx9", ["zx"]),
-        ("unit42tag", ["unit", "tag"]),
-        ("ＡＢ", ["ab"]),
+        ("A-B-C", ["a", "b", "c"]),
+        ("abc_def", ["abc", "def"]),
+        ("\uff21\uff22", ["ab"]),
     ],
 )
-def test_word_sequence_contract(text, expected):
-    assert cg.word_sequence(text) == expected
+def test_tokenizer_contract(text, expected):
+    assert [token.value for token in cg.tokenize_text(text)] == expected
+
+
+def test_one_chunk_keeps_one_index():
+    """Punctuation and underscores divide runs without ending the chunk."""
+    assert {token.chunk for token in cg.tokenize_text("zor_blax-9.q")} == {0}
+
+
+def test_whitespace_starts_a_new_chunk():
+    assert [token.chunk for token in cg.tokenize_text("zor blax")] == [0, 1]
+
+
+def test_digit_tokens_are_flagged():
+    assert [token.is_digit for token in cg.tokenize_text("qx7")] == [False, True]
+
+
+def test_token_offsets_locate_the_first_token():
+    tokens = cg.tokenize_text("one\ntwo QuuxFrobnitz")
+    index = cg.LineIndex("one\ntwo QuuxFrobnitz")
+    quux = next(token for token in tokens if token.value == "quux")
+    assert index.locate(quux.offset) == (2, 5)
 
 
 @pytest.mark.parametrize(
@@ -540,5 +711,92 @@ def test_number_token_contract(text, expected):
 def test_salt_is_not_read_from_the_environment(monkeypatch):
     """The shipped salt is a constant; no environment variable can weaken it."""
     monkeypatch.setenv("MATSURVEY_GUARD_SALT", "attacker-supplied")
-    assert cg.salted("term", "zorblax") == cg.salted("term", "zorblax", cg.SALT)
-    assert cg.salted("term", "zorblax", TEST_SALT) != cg.salted("term", "zorblax")
+    assert cg.salted("phrase", "zorblax") == cg.salted("phrase", "zorblax", cg.SALT)
+    assert cg.salted("phrase", "zorblax", TEST_SALT) != cg.salted("phrase", "zorblax")
+
+
+# --------------------------------------------------------------------------
+# builder -- which kinds a term line produces
+# --------------------------------------------------------------------------
+
+
+def kinds_for(line: str) -> set[str]:
+    entries, _count = bd.term_entries(line, TEST_SALT)
+    return {entry.split(":", 1)[0] for entry in entries}
+
+
+def test_builder_emits_phrase_and_compact_for_an_alpha_term():
+    assert kinds_for("gloop works") == {"phrase", "compact"}
+
+
+def test_builder_emits_mixed_instead_of_phrase_for_a_digit_term():
+    """The heart of the fix: a digit-bearing term gets no alpha-only entry."""
+    assert kinds_for("qx7") == {"mixed", "compact"}
+
+
+def test_builder_emits_compact_only_for_a_long_term():
+    entries, count = bd.term_entries("alpha bravo charlie delta echo", TEST_SALT)
+    assert count == 5
+    assert {entry.split(":", 1)[0] for entry in entries} == {"compact"}
+
+
+def test_builder_refuses_a_term_longer_than_the_compact_window():
+    with pytest.raises(cg.GuardError):
+        bd.term_entries("a b c d e f g h i", TEST_SALT)
+
+
+def test_builder_refuses_a_line_with_no_tokens():
+    with pytest.raises(cg.GuardError):
+        bd.term_entries("---", TEST_SALT)
+
+
+def test_builder_output_reports_counts_without_plaintext(tmp_path, capsys):
+    config = tmp_path / "config"
+    config.mkdir()
+    (config / "terms.txt").write_text("gloopworks\nqx7\n", encoding="utf-8")
+    (config / "fingerprints.txt").write_text("", encoding="utf-8")
+    (config / "files.txt").write_text("", encoding="utf-8")
+    out_dir = tmp_path / "out"
+    assert (
+        bd.main(
+            [
+                "--terms", str(config / "terms.txt"),
+                "--fingerprints", str(config / "fingerprints.txt"),
+                "--files", str(config / "files.txt"),
+                "--corpus", str(tmp_path / "absent-corpus"),
+                "--out", str(out_dir),
+                "--salt", TEST_SALT,
+            ]
+        )
+        == 0
+    )
+    printed = capsys.readouterr().out
+    assert "gloopworks" not in printed
+    assert "qx7" not in printed
+    assert "phrase" in printed and "mixed" in printed and "compact" in printed
+
+
+def test_builder_output_is_loadable_by_the_guard(tmp_path):
+    """Round trip: what the builder writes is what the guard accepts."""
+    config = tmp_path / "config"
+    config.mkdir()
+    (config / "terms.txt").write_text("gloopworks\n", encoding="utf-8")
+    (config / "fingerprints.txt").write_text("", encoding="utf-8")
+    (config / "files.txt").write_text("", encoding="utf-8")
+    out_dir = tmp_path / "out"
+    assert bd.main([
+        "--terms", str(config / "terms.txt"),
+        "--fingerprints", str(config / "fingerprints.txt"),
+        "--files", str(config / "files.txt"),
+        "--corpus", str(tmp_path / "absent-corpus"),
+        "--out", str(out_dir),
+        "--salt", TEST_SALT,
+    ]) == 0
+    (out_dir / "config.toml").write_text(
+        (Path(__file__).resolve().parents[2] / "guard" / "config.toml").read_text(
+            encoding="utf-8"
+        ),
+        encoding="utf-8",
+    )
+    lists, _config = cg.load_all(out_dir, salt=TEST_SALT)
+    assert lists.compacts and not lists.mixed

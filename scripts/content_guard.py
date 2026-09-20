@@ -24,17 +24,32 @@ Exit codes
 2   guard error -- unreadable list, malformed list, bad config, unexpected
     exception.  Callers must treat any non-zero status as a block.
 
+Matching
+--------
+Text is tokenised into a sequence **S** of letter and digit tokens; **A** is the
+letter-only subsequence.  A term is matched three ways:
+
+``phrase``
+    1..4 consecutive tokens of **A**, joined by spaces.  Digits are invisible
+    here, so an all-letter term behaves exactly as it always has, and a phrase
+    may cross punctuation, chunk boundaries and line breaks.
+``mixed``
+    1..4 consecutive tokens of **S**, joined by spaces.  A term containing a
+    digit is stored only this way, so it matches only where its digit is
+    actually present.
+``compact``
+    1..8 consecutive tokens of **S** that lie inside one whitespace-delimited
+    chunk, joined by nothing.  This recovers a term however it is spelled
+    inside one word -- ``GloopWorks``, ``gloop-works``, ``gloop_works`` -- and,
+    because it never crosses whitespace, ordinary prose reading "the gloop
+    works" does not match it.
+
 Known limitation
 ----------------
-Matching is token equality over word n-grams, not substring matching.  An
+Matching is token equality over token windows, not substring matching.  An
 inflected or misspelled form of a listed term is therefore not matched.  This
 is deliberate: substring matching on short terms produces false positives, and
 a guard that cries wolf teaches people to route around it.
-
-A run that splits into several words is additionally checked in its re-joined
-form, so an internal capital -- ``ZorBlax`` against an entry spelled
-``zorblax`` -- does not slip past.  That is still whole-token equality, not
-a substring search.
 
 Offsets are reported against the NFKC-normalised text.  For ASCII content that
 is identical to the bytes on disk; for content using compatibility forms the
@@ -56,10 +71,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Sequence
 
-SALT = "matsurvey-guard-v1"
+SALT = "matsurvey-guard-v2"
+LIST_FORMAT = 2
+TOKENIZER_VERSION = 2
 MAX_NGRAM = 4
+MAX_COMPACT = 8
 SHINGLE_WORDS = 10
 SHINGLE_HASH_LEN = 16
+DENYLIST_NAME = "denylist.v2.txt"
+SHINGLES_NAME = "shingles.v2.txt"
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 ZERO_SHA = "0" * 40
 
@@ -111,13 +131,20 @@ def salted(kind: str, value: str, salt: str = SALT) -> str:
 
 @dataclass(frozen=True)
 class Token:
-    """A token and where it starts in the normalised text."""
+    """A token, where it starts, and which whitespace chunk it came from.
+
+    ``chunk`` is what keeps compact matching from crossing a space: two tokens
+    with different chunk indices were separated by whitespace in the source.
+    """
 
     value: str
     offset: int
     length: int
+    chunk: int = 0
+    is_digit: bool = False
 
 
+_CHUNK_RE = re.compile(r"\S+")
 _RUN_RE = re.compile(r"[^\W_]+", re.UNICODE)
 _NUM_RE = re.compile(
     r"(?<![A-Za-z0-9.])(\d{1,3}(?:[,_]\d{3})+|\d+)(?:\.(\d+))?(?![A-Za-z0-9])"
@@ -133,50 +160,62 @@ def normalize(text: str) -> str:
 
 
 def _split_run(run: str) -> list[tuple[str, int]]:
-    """Split one alphanumeric run at lower->upper and letter<->digit boundaries."""
+    """Split one alphanumeric run into its parts.
+
+    Boundaries are lowercase->uppercase (``RoboBot``), the end of an acronym --
+    an uppercase letter followed by uppercase then lowercase, so ``HTTPServer``
+    gives ``HTTP`` and ``Server`` -- and any letter<->digit transition.
+    """
     parts: list[tuple[str, int]] = []
     start = 0
     for i in range(1, len(run)):
         prev, char = run[i - 1], run[i]
-        if (prev.islower() and char.isupper()) or (prev.isalpha() != char.isalpha()):
+        acronym_end = (
+            prev.isupper()
+            and char.isupper()
+            and i + 1 < len(run)
+            and run[i + 1].islower()
+        )
+        if (
+            (prev.islower() and char.isupper())
+            or (prev.isalpha() != char.isalpha())
+            or acronym_end
+        ):
             parts.append((run[start:i], start))
             start = i
     parts.append((run[start:], start))
     return parts
 
 
-def word_tokens(text: str) -> list[Token]:
-    """Return the word sequence of the whole text, in order.
+def tokenize(text: str) -> list[Token]:
+    """Tokenise already-normalised text into the sequence S.
 
-    Digits are dropped; only alphabetic parts survive.  Building one sequence
-    for the entire blob is what lets a phrase match across punctuation and
-    line breaks.
+    Whitespace divides the text into chunks; punctuation and ``_`` divide a
+    chunk into runs without ending it; a run is then split at case and
+    letter/digit boundaries.  Letter parts are casefolded, digit parts kept
+    verbatim, and both stay in the sequence in document order.
     """
     tokens: list[Token] = []
-    for match in _RUN_RE.finditer(text):
-        run, base = match.group(0), match.start()
-        for part, offset in _split_run(run):
-            if part.isalpha():
-                tokens.append(Token(part.casefold(), base + offset, len(part)))
+    for chunk_index, chunk in enumerate(_CHUNK_RE.finditer(text)):
+        body, chunk_base = chunk.group(0), chunk.start()
+        for run in _RUN_RE.finditer(body):
+            base = chunk_base + run.start()
+            for part, offset in _split_run(run.group(0)):
+                if part.isalpha():
+                    value, digit = part.casefold(), False
+                elif part.isdigit():
+                    value, digit = part, True
+                else:
+                    continue  # neither a word nor a number: nothing to match
+                tokens.append(
+                    Token(value, base + offset, len(part), chunk_index, digit)
+                )
     return tokens
 
 
-def joined_run_tokens(text: str) -> list[Token]:
-    """The re-joined form of each run that split into several words.
-
-    ``ZorBlax`` splits at the camelCase boundary into two words, so a
-    single-word entry spelled ``zorblax`` would not match it.  Re-joining
-    the alphabetic parts of a run and checking that as one more unigram closes
-    that gap without giving up token equality: the joined form is still
-    matched whole, never as a substring.
-    """
-    tokens: list[Token] = []
-    for match in _RUN_RE.finditer(text):
-        run, base = match.group(0), match.start()
-        parts = [part for part, _ in _split_run(run) if part.isalpha()]
-        if len(parts) > 1:
-            tokens.append(Token("".join(parts).casefold(), base, len(run)))
-    return tokens
+def alpha_tokens(tokens: Sequence[Token]) -> list[Token]:
+    """The subsequence A: letter tokens only, in document order."""
+    return [token for token in tokens if not token.is_digit]
 
 
 def _number_value(integer: str, fraction: str | None) -> str:
@@ -210,19 +249,49 @@ def hex_tokens(text: str) -> list[Token]:
     return tokens
 
 
-def windows(tokens: Sequence[Token], size: int) -> Iterator[tuple[str, int, int]]:
+def windows(
+    tokens: Sequence[Token], size: int, *, joiner: str = " "
+) -> Iterator[tuple[str, int, int]]:
     """Yield ``(joined value, start offset, end offset)`` for each window."""
     for index in range(len(tokens) - size + 1):
         window = tokens[index : index + size]
-        value = " ".join(token.value for token in window)
+        value = joiner.join(token.value for token in window)
         start = window[0].offset
         end = window[-1].offset + window[-1].length
         yield value, start, end
 
 
-def word_sequence(text: str) -> list[str]:
-    """The plain word sequence of ``text`` -- used when building lists."""
-    return [token.value for token in word_tokens(normalize(text))]
+def compact_windows(tokens: Sequence[Token]) -> Iterator[tuple[str, int, int]]:
+    """Yield every compact window: up to MAX_COMPACT tokens inside one chunk.
+
+    Stopping at a chunk boundary is the whole point -- it is what stops a term
+    made of common words from firing on ordinary prose that merely contains
+    those words in order, separated by spaces.
+    """
+    total = len(tokens)
+    for start in range(total):
+        chunk = tokens[start].chunk
+        for size in range(1, MAX_COMPACT + 1):
+            stop = start + size
+            if stop > total or tokens[stop - 1].chunk != chunk:
+                break
+            window = tokens[start:stop]
+            value = "".join(token.value for token in window)
+            yield value, window[0].offset, window[-1].offset + window[-1].length
+
+
+def shingle_windows(tokens: Sequence[Token]) -> Iterator[tuple[str, int, int]]:
+    """The R10 windows: SHINGLE_WORDS consecutive tokens of A.
+
+    Exported so the builder and the scanner cannot drift apart: a shingle
+    hashed one way and looked up another would silently never match.
+    """
+    return windows(alpha_tokens(tokens), SHINGLE_WORDS)
+
+
+def tokenize_text(text: str) -> list[Token]:
+    """Normalise then tokenise -- the entry point for anything outside a scan."""
+    return tokenize(normalize(text))
 
 
 # --------------------------------------------------------------------------
@@ -231,16 +300,23 @@ def word_sequence(text: str) -> list[str]:
 
 _HASH64_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 _HASH_SHINGLE_RE = re.compile(r"\A[0-9a-f]{%d}\Z" % SHINGLE_HASH_LEN)
-_LIST_KINDS = ("term", "num", "hex", "file")
+_LIST_KINDS = ("phrase", "mixed", "compact", "num", "hex", "file")
+_TERM_KINDS = ("phrase", "mixed", "compact")
 
 
 @dataclass(frozen=True)
 class Lists:
-    terms: frozenset[str]
+    phrases: frozenset[str]
+    mixed: frozenset[str]
+    compacts: frozenset[str]
     nums: frozenset[str]
     hexes: frozenset[str]
     files: frozenset[str]
     shingles: frozenset[str]
+
+    @property
+    def any_terms(self) -> bool:
+        return bool(self.phrases or self.mixed or self.compacts)
 
 
 @dataclass(frozen=True)
@@ -263,28 +339,62 @@ def _read_lines(path: Path) -> list[str]:
     return raw.splitlines()
 
 
-def load_denylist(path: Path) -> tuple[frozenset[str], ...]:
-    buckets: dict[str, set[str]] = {kind: set() for kind in _LIST_KINDS}
-    for number, line in enumerate(_read_lines(path), start=1):
+def list_header(salt: str = SALT) -> tuple[str, ...]:
+    """The four lines every list file must begin with."""
+    return (
+        "# matsurvey guard list",
+        f"# format: {LIST_FORMAT}",
+        f"# tokenizer: {TOKENIZER_VERSION}",
+        f"# salt: {salt}",
+    )
+
+
+def _entries(path: Path, salt: str) -> list[tuple[int, str]]:
+    """Validate the header, then return the numbered entry lines.
+
+    A list built by a different tokenizer would look clean rather than match
+    nothing, so the header is checked before a single entry is read, and any
+    mismatch is a guard error rather than an empty list.
+    """
+    lines = _read_lines(path)
+    expected = list_header(salt)
+    if lines[: len(expected)] != list(expected):
+        raise GuardError(
+            f"{path}: header must declare format {LIST_FORMAT}, "
+            f"tokenizer {TOKENIZER_VERSION} and this guard's salt"
+        )
+    entries: list[tuple[int, str]] = []
+    previous = ""
+    for number, line in enumerate(lines[len(expected) :], start=len(expected) + 1):
         stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
+        if not stripped:
             continue
-        kind, separator, digest = stripped.partition(":")
+        if stripped.startswith("#"):
+            raise GuardError(f"{path}:{number}: no comments after the header")
+        if previous and stripped <= previous:
+            problem = "duplicate" if stripped == previous else "out of order"
+            raise GuardError(f"{path}:{number}: {problem} entry")
+        previous = stripped
+        entries.append((number, stripped))
+    return entries
+
+
+def load_denylist(path: Path, salt: str = SALT) -> dict[str, frozenset[str]]:
+    buckets: dict[str, set[str]] = {kind: set() for kind in _LIST_KINDS}
+    for number, entry in _entries(path, salt):
+        kind, separator, digest = entry.partition(":")
         if not separator or kind not in buckets or not _HASH64_RE.match(digest):
             raise GuardError(f"{path}:{number}: malformed denylist entry")
         buckets[kind].add(digest)
-    return tuple(frozenset(buckets[kind]) for kind in _LIST_KINDS)
+    return {kind: frozenset(values) for kind, values in buckets.items()}
 
 
-def load_shingles(path: Path) -> frozenset[str]:
+def load_shingles(path: Path, salt: str = SALT) -> frozenset[str]:
     digests: set[str] = set()
-    for number, line in enumerate(_read_lines(path), start=1):
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        if not _HASH_SHINGLE_RE.match(stripped):
+    for number, entry in _entries(path, salt):
+        if not _HASH_SHINGLE_RE.match(entry):
             raise GuardError(f"{path}:{number}: malformed shingle entry")
-        digests.add(stripped)
+        digests.add(entry)
     return frozenset(digests)
 
 
@@ -329,14 +439,38 @@ def load_config(path: Path) -> Config:
     return config
 
 
-def load_all(directory: Path) -> tuple[Lists, Config]:
+def _reject_stale_lists(directory: Path) -> None:
+    """Refuse a lists directory that still holds a list from another format."""
+    for pattern, current in (
+        ("denylist.v*.txt", DENYLIST_NAME),
+        ("shingles.v*.txt", SHINGLES_NAME),
+    ):
+        for path in sorted(directory.glob(pattern)):
+            if path.name != current:
+                raise GuardError(
+                    f"{path}: a list from another format is still present; "
+                    f"this guard reads {current}"
+                )
+
+
+def load_all(directory: Path, *, salt: str = SALT) -> tuple[Lists, Config]:
     """Load lists and config from ``directory``, failing closed on any problem."""
     if not directory.is_dir():
         raise GuardError(f"lists directory not found: {directory}")
-    terms, nums, hexes, files = load_denylist(directory / "denylist.v1.txt")
-    shingles = load_shingles(directory / "shingles.v1.txt")
+    _reject_stale_lists(directory)
+    buckets = load_denylist(directory / DENYLIST_NAME, salt)
+    shingles = load_shingles(directory / SHINGLES_NAME, salt)
     config = load_config(directory / "config.toml")
-    return Lists(terms, nums, hexes, files, shingles), config
+    lists = Lists(
+        buckets["phrase"],
+        buckets["mixed"],
+        buckets["compact"],
+        buckets["num"],
+        buckets["hex"],
+        buckets["file"],
+        shingles,
+    )
+    return lists, config
 
 
 # --------------------------------------------------------------------------
@@ -352,6 +486,7 @@ class Finding:
     rule: str
     message: str
     detail: str | None = None
+    kinds: tuple[str, ...] = ()
 
 
 class LineIndex:
@@ -466,29 +601,41 @@ def scan_tokens(
         assert index is not None
         return index.locate(offset)
 
-    words = word_tokens(text)
+    tokens = tokenize(text)
 
-    if lists.terms:
-        for size in range(1, MAX_NGRAM + 1):
-            for value, start, end in windows(words, size):
-                if salted("term", value, salt) in lists.terms:
-                    line, col = locate(start)
-                    findings.append(
-                        Finding(label, line, col, "R7", "blocked term", text[start:end])
-                    )
-        for token in joined_run_tokens(text):
-            if salted("term", token.value, salt) in lists.terms:
-                line, col = locate(token.offset)
-                findings.append(
-                    Finding(
-                        label,
-                        line,
-                        col,
-                        "R7",
-                        "blocked term",
-                        text[token.offset : token.offset + token.length],
-                    )
+    if lists.any_terms:
+        # Several kinds can fire on one span -- a camelCase spelling matches both
+        # the phrase and the compact form of the same term -- so hits are
+        # collected per span and reported once, naming every kind that fired.
+        hits: dict[tuple[int, int], set[str]] = {}
+        if lists.phrases:
+            alpha = alpha_tokens(tokens)
+            for size in range(1, MAX_NGRAM + 1):
+                for value, start, end in windows(alpha, size):
+                    if salted("phrase", value, salt) in lists.phrases:
+                        hits.setdefault((start, end), set()).add("phrase")
+        if lists.mixed:
+            for size in range(1, MAX_NGRAM + 1):
+                for value, start, end in windows(tokens, size):
+                    if salted("mixed", value, salt) in lists.mixed:
+                        hits.setdefault((start, end), set()).add("mixed")
+        if lists.compacts:
+            for value, start, end in compact_windows(tokens):
+                if salted("compact", value, salt) in lists.compacts:
+                    hits.setdefault((start, end), set()).add("compact")
+        for (start, end), kinds in sorted(hits.items()):
+            line, col = locate(start)
+            findings.append(
+                Finding(
+                    label,
+                    line,
+                    col,
+                    "R7",
+                    "blocked term",
+                    text[start:end],
+                    tuple(kind for kind in _TERM_KINDS if kind in kinds),
                 )
+            )
 
     if lists.nums:
         for token in number_tokens(text):
@@ -507,7 +654,7 @@ def scan_tokens(
                 )
 
     if lists.shingles:
-        for value, start, end in windows(words, SHINGLE_WORDS):
+        for value, start, end in shingle_windows(tokens):
             if salted("shingle", value, salt)[:SHINGLE_HASH_LEN] in lists.shingles:
                 line, col = locate(start)
                 findings.append(
@@ -857,7 +1004,13 @@ def report(findings: Sequence[Finding], ctx: Context, *, ci: bool) -> None:
             suffix = " (masked)"
         else:
             suffix = ' "' + " ".join(finding.detail.split()) + '"'
-        print(f"{label}:{finding.line}:{finding.col} {finding.rule} {finding.message}{suffix}")
+        # The kind names how a term matched, not what it was, so they stay
+        # visible in CI while the matched text itself is masked.
+        kinds = f" ({', '.join(finding.kinds)})" if finding.kinds else ""
+        print(
+            f"{label}:{finding.line}:{finding.col} "
+            f"{finding.rule} {finding.message}{kinds}{suffix}"
+        )
     print(f"content-guard: {len(findings)} finding(s)", file=sys.stderr)
 
 
