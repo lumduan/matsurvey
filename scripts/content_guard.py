@@ -44,12 +44,31 @@ letter-only subsequence.  A term is matched three ways:
     because it never crosses whitespace, ordinary prose reading "the gloop
     works" does not match it.
 
-Known limitation
-----------------
-Matching is token equality over token windows, not substring matching.  An
-inflected or misspelled form of a listed term is therefore not matched.  This
-is deliberate: substring matching on short terms produces false positives, and
-a guard that cries wolf teaches people to route around it.
+Known limitations
+-----------------
+Three things this guard does not do.  Each is a trade made on purpose, not an
+oversight, and none of them should be closed by weakening a rule.
+
+Inflected and misspelled forms are not matched.  Matching is token equality
+over token windows, never substring matching, so a word that merely contains
+an entry is left alone.  Substring matching on short entries produces false
+positives, and a guard that cries wolf teaches people to route around it.
+
+An entry ending in a digit is not matched when more digits follow it with no
+separator.  ``qx7`` is the two tokens ``qx`` and ``7``; in ``qx72026`` that
+trailing digit merges with what follows into the single token ``72026``, so
+the entry's sequence is no longer present.  Any separator at all -- a space, a
+hyphen, an underscore -- keeps the two apart and the entry matches as usual.
+Closing this would mean matching inside a longer token, which is exactly the
+substring matching the first limitation rules out.
+
+A phrase window crosses punctuation, so it can report a false positive.  Those
+windows run over consecutive words and ignore whatever lies between them,
+which is what lets an entry match across a hyphen, a comma or a line break.
+The same reach means two words sitting either side of a full stop or a
+semicolon will match an entry made of those two words, even when the text
+means something unrelated.  Report such a case rather than editing the entry
+list or relaxing the rule.
 
 Offsets are reported against the NFKC-normalised text.  For ASCII content that
 is identical to the bytes on disk; for content using compatibility forms the
