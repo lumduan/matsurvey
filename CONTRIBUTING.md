@@ -46,6 +46,20 @@ The lists hold salted hashes and nothing else, so they can be public without dis
 what they protect. That also means the guard cannot tell you what it matched beyond the
 text already in front of you: run it locally, without `--ci`, to see the offending text.
 
+A finding names how the text matched, and the kind is safe to print even in CI:
+
+| Kind | Matched against |
+|---|---|
+| `phrase` | consecutive words, ignoring any digits between them; crosses punctuation and line breaks |
+| `mixed` | consecutive tokens including digits, so an entry carrying a digit matches only where that digit is present |
+| `compact` | tokens joined with nothing, inside a single whitespace-delimited word - this is what catches a run-together, camelCased, hyphenated or underscored spelling |
+
+The list files carry a header declaring the format, the tokenizer and the salt they were
+built with. If any of those does not match the guard reading them, the guard stops with an
+error rather than quietly matching nothing, and a list left behind from an older format is
+refused for the same reason. Rebuild the lists with `scripts/build_denylist.py`; it prints
+counts, never content.
+
 ```sh
 python scripts/content_guard.py --staged        # what you are about to commit
 python scripts/content_guard.py --tree          # every tracked file
@@ -77,3 +91,32 @@ CI runs neither.
 
 Keep the title and body neutral — both are scanned. Squash merge is the only merge method,
 so the pull request title becomes the commit message on `main`.
+
+## Maintainers
+
+Three rules that the guard cannot enforce for you.
+
+**1. Merge with the default squash title and message.** Do not edit either in the merge
+dialog. Text typed there is never checked, and it lands directly on the default branch,
+which cannot be rewritten. To change what the commit will say, edit the pull request title
+and let `guard` run again.
+
+**2. A green `guard` check is not evidence for a pull request that changes the guard
+itself.** On a pull request the job runs the workflow file from that pull request, so a
+change to `.github/workflows/guard.yml` controls the job that judges it. The run writes a
+notice to its step summary when a pull request touches `.github/workflows/`, `.githooks/`,
+`scripts/content_guard.py`, `scripts/build_denylist.py` or `guard/`. That notice makes such
+a pull request visible; it cannot make it safe. Before merging one, run the guard from the
+default branch against the pull request head yourself:
+
+```sh
+git fetch origin main pull/<N>/head:pr-<N>
+rm -rf /tmp/guard-main && mkdir -p /tmp/guard-main
+git archive origin/main scripts/content_guard.py guard | tar -x -C /tmp/guard-main
+python3 /tmp/guard-main/scripts/content_guard.py --lists /tmp/guard-main/guard \
+  --range origin/main..pr-<N>
+```
+
+**3. Never write a third-party name into a pull request title, body or comment**, not even
+to check that the guard catches it. Title changes and body edits stay visible in the
+timeline afterwards, so there is nothing to undo. Test negative cases locally instead.
