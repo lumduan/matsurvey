@@ -1,0 +1,45 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 lumduan and matsurvey contributors
+"""Refuse a commit message that the guard blocks.
+
+The guard must run on every commit and every push.  If it blocks, fix the
+content -- do not bypass the hook.  Any unexpected condition fails closed.
+"""
+
+from __future__ import annotations
+
+import subprocess
+import sys
+
+MINIMUM = (3, 11)
+
+
+def fail(message: str) -> None:
+    sys.stderr.write(f"content guard: {message}\n")
+    raise SystemExit(1)
+
+
+def guard_path() -> str:
+    if sys.version_info < MINIMUM:
+        found = ".".join(str(part) for part in sys.version_info[:3])
+        fail(f"needs Python {MINIMUM[0]}.{MINIMUM[1]} or newer; found {found}")
+    result = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        fail("cannot locate the repository root")
+    return f"{result.stdout.strip()}/scripts/content_guard.py"
+
+
+
+def main() -> int:
+    if len(sys.argv) < 2:
+        fail("commit-msg hook called without a message file")
+    return subprocess.run(
+        [sys.executable, guard_path(), "--commit-msg", sys.argv[1]]
+    ).returncode
+
+
+if __name__ == "__main__":
+    sys.exit(main())

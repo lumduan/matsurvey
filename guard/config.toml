@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 lumduan and matsurvey contributors
+# Content guard limits and allowlists.
+# This file carries no denylisted content: the lists beside it hold hashes only.
+
+[limits]
+# Files larger than this are refused unless the path is in allowlists.size.
+max_file_bytes = 524288
+# Nothing may exceed this, allowlisted or not.
+hard_max_file_bytes = 2097152
+# A base64 run of this many characters on one line is treated as a payload.
+base64_run_min = 1024
+# A data: URI carrying more base64 than this is treated as a payload.
+data_uri_base64_min = 256
+
+[allowlists]
+# Paths permitted to hold content that is not valid UTF-8.  Deliberately empty:
+# this repository contains no binary files.
+binary = []
+# Paths permitted to exceed max_file_bytes, up to hard_max_file_bytes.
+size = ["uv.lock", "guard/shingles.v1.txt"]

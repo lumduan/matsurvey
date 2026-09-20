@@ -1,0 +1,16 @@
+# Allowlist: exclude everything, then admit only what the image needs.
+*
+
+!pyproject.toml
+!uv.lock
+!matsurvey/
+!tools/
+!web/
+!README.md
+!LICENSE
+!NOTICE
+
+# Re-excluded regardless of the rules above.
+**/*.pdf
+web/node_modules
+data/

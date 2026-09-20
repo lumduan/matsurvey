@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 lumduan and matsurvey contributors
+#
+# Every installed distribution must appear below with the SPDX expression its
+# own metadata states, and that expression must be in `allowed`. `evidence` is
+# the exact metadata string the expression was read from; if it ever changes,
+# check_licenses.py fails so the change is reviewed rather than absorbed.
+#
+# An entry whose metadata does not state one unambiguous SPDX expression must
+# also set `interpreted = true` and explain the reasoning in `note`. There are
+# none today: all five components below state their license outright.
+
+allowed = [
+    "MIT",
+    "MIT-0",
+    "ISC",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Apache-2.0",
+    "Apache-2.0 OR BSD-2-Clause",
+    "MPL-2.0",
+    "PSF-2.0",
+    "AGPL-3.0-only",
+    "AGPL-3.0-or-later",
+]
+
+[packages.Pygments]
+spdx = "BSD-2-Clause"
+evidence = "License-Expression: BSD-2-Clause"
+
+[packages.iniconfig]
+spdx = "MIT"
+evidence = "License-Expression: MIT"
+
+[packages.packaging]
+spdx = "Apache-2.0 OR BSD-2-Clause"
+evidence = "License-Expression: Apache-2.0 OR BSD-2-Clause"
+
+[packages.pluggy]
+spdx = "MIT"
+evidence = "Classifier: License :: OSI Approved :: MIT License"
+
+[packages.pytest]
+spdx = "MIT"
+evidence = "License-Expression: MIT"

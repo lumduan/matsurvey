@@ -1,0 +1,17 @@
+data/
+*.pdf
+tiles/
+render/
+img/
+extracted/
+.venv/
+node_modules/
+web/out/
+web/.next/
+local/
+*.png
+*.jpg
+*.webp
+__pycache__/
+*.py[cod]
+.pytest_cache/

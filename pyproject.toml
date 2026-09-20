@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 lumduan and matsurvey contributors
+
+[project]
+name = "matsurvey"
+version = "0.0.0"
+description = "Survey robot-competition mats: import a mat PDF you supply into mm-exact geometry you can measure, snap and simulate. Self-hosted."
+readme = "README.md"
+license = "AGPL-3.0-or-later"
+requires-python = ">=3.13"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.uv]
+# Nothing here is installed as a distribution yet; the tree is run in place.
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "local: needs the operator's local plaintext lists; never runs in CI",
+    "golden: needs source documents the repository does not ship; never runs in CI",
+]
